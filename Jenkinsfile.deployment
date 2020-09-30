@@ -1,0 +1,149 @@
+#!/usr/bin/env groovy
+pipeline {
+  agent { label 'pls-bld-l01' }
+  
+  parameters {
+        string defaultValue: 'develop', description: '"Enter Branch Name"', name: 'BRANCH_NAME', trim: true
+        string (defaultValue: 'NIL', description: 'Nexus Version Number', name: 'nexusversion', trim: true)
+        choice (choices: ['pls-aps-t03', 'pls-aps-p01'], description: 'pls-aps-t03 -> Test server \n pls-aps-p01 -> Acc server', name: 'environment')
+        booleanParam                defaultValue: false, description: 'Check to remove pagecache', name: 'InvalidatePagecache'
+    }
+  
+    stages {
+  
+    
+         stage('check User') {
+               steps {
+                
+                wrap([$class: 'BuildUser']) {
+                  script {
+                     USER_ID = "${BUILD_USER_ID}"
+                  }
+                }
+                
+              }	
+        }
+
+
+    
+    stage('Deploy Test'){
+    
+		environment {
+		
+			def server = "${params.environment}"
+			def nexusversion = "${params.nexusversion}"
+		}
+		when {
+		allOf {
+		        expression { USER_ID ==~ /(srinivasuluc|rgusain|duggalk|akagarwal|gusainr|pusingh|srajvanshi|ssgeorge|ragarwal|vsingh|singhr|jmohammad)/ }
+		        expression { environment ==~ /(pls-aps-t03)/ }
+                expression { nexusversion != 'NIL' }
+              }
+                    
+        }
+		steps {
+			  
+			  // send build started notifications
+              slackSend (color: '#FFFF00', message: "DEPLOYMENT STARTED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})")
+			  
+			  	  sh "rsync -avh ${WORKSPACE}/devops/deployments/${server} intershop1@${server}:/opt/intershop/install/new_workspace --delete-before"
+				  sh "ssh -t intershop1@${server} ASSEMBLY=${nexusversion} sh /opt/intershop/install/new_workspace/${server}/deploy.sh"
+
+				script {
+					currentBuild.description = "Nexus Version: ${nexusversion} \n Environment: ${server} \n Branch: ${BRANCH_NAME}"
+					}
+					
+		}
+    }
+    
+        stage('Deploy Acc'){
+    
+		environment {
+		
+			def server = "${params.environment}"
+			def nexusversion = "${params.nexusversion}"
+		}
+					when {
+        
+            allOf {
+                expression { USER_ID ==~ /(ssgeorge|ragarwal|vsingh|akagarwal|singhr|jmohammad)/ }
+				expression { environment ==~ /(pls-aps-p01)/ }
+				expression { nexusversion != 'NIL' }
+                }
+            }
+
+		steps {
+			  
+			  // send build started notifications
+              slackSend (color: '#FFFF00', message: "DEPLOYMENT STARTED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})")
+			  
+			  	  sh "rsync -avh ${WORKSPACE}/devops/deployments/${server} intershop1@${server}:/opt/intershop/install/new_workspace --delete-before"
+				  sh "ssh -t intershop1@${server} ASSEMBLY=${nexusversion} sh /opt/intershop/install/new_workspace/${server}/deploy.sh"
+
+				script {
+					currentBuild.description = "Nexus Version: ${nexusversion} \n Environment: ${server} \n Branch: ${BRANCH_NAME}"
+					}
+					
+		}
+    }
+    stage('Startup Status') {
+        environment {
+	  		def server = "${params.environment}"
+        }
+		when {
+                expression { nexusversion != 'NIL' }
+                    
+        }
+		steps {
+
+			sh "sh statuscodecheck.sh ${server}" 
+				
+				
+		}
+	}
+	
+	stage('Invalidate Pagecache') {
+        environment {
+	  		def server = "${params.environment}"
+        }
+		when {
+		    allOf {
+		        expression { nexusversion != 'NIL' }
+                expression { InvalidatePagecache == 'true' }
+		    }
+                    
+        }
+		steps {
+				
+			sh 'ssh -t intershop1@${server} ASSEMBLY=${nexusversion} sh /opt/intershop/install/new_workspace/${server}/invalidate_pagecache.sh -o soft'
+        
+	    }
+	}
+	
+	
+  }
+  
+  post {
+      
+      success {
+          
+          slackSend (color: '#00FF00', message: "SUCCESSFUL: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})")
+          
+          
+                mail to: 'himag@pembridgesoft.ca', from: 'systeembeheer@pembridgesoft.ca',
+                subject: "PLUS Pipeline: ${env.JOB_NAME} - +Success", 
+                body: "Job Failed - \"${env.JOB_NAME}\" build: ${env.BUILD_NUMBER}\n\nView the log at:\n ${env.BUILD_URL}\n\nBlue Ocean:\n${env.RUN_DISPLAY_URL}" 
+           
+        }
+        failure {
+          slackSend (color: '#FF0000', message: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})")
+            
+            mail to: 'himag@pembridgesoft.ca', from: 'systeembeheer@pembridgesoft.ca',
+                subject: "Example Build: ${env.JOB_NAME} - Failed", 
+                body: "Job Failed - \"${env.JOB_NAME}\" build: ${env.BUILD_NUMBER}\n\nView the log at:\n ${env.BUILD_URL}\n\nBlue Ocean:\n${env.RUN_DISPLAY_URL}"
+            
+            }
+    }
+ 
+}
+
